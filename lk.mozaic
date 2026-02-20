@@ -1,0 +1,173 @@
+@OnLoad
+  Call @InitializeLaunchKey
+  Call @SetStationaryDisplay
+  
+  LabelPad 0, {Reset LaunchKey} 
+  LabelPad 1, {Initialize LaunchKey}
+  
+  // 0 - Note on
+  // 1 - Note off
+  // 2 - Note on, forced note off sent before on same channel and note
+  // 3 - Midi CC
+  SysexTunnelMidiMessageMap = [0x90, 0x80, 0x90, 0xB0]
+  
+  // Make function button light up
+  SendMIDICC 3, 105, 45
+  SendMIDICC 3, 104, 45
+  
+  // Track timer
+  //TimerElapsedSeconds = 0
+  //SetTimerInterval 1000
+  //StartTimer
+@End
+
+@OnTimer
+  TimerElapsedSeconds = TimerElapsedSeconds + 1
+  
+@End
+
+@OnPadDown
+  if LastPad = 0
+    Call @ResetLaunchKey
+  endif
+  if LastPad = 1
+    Call @InitializeLaunchKey
+  endif
+@End
+
+@OnSysex
+
+  ReceiveSysex sysexData
+  //Call @LogCustomSysex
+  
+  // Exit if message does not contain vendor prefix byte
+  if sysexData[0] <> 0x42
+    Exit
+  endif
+  
+  sysexTunnelMessageId = sysexData[1]
+  message = SysexTunnelMidiMessageMap[sysexTunnelMessageId]
+  channel = sysexData[2]
+  byte1 = message + channel
+  byte2 = sysexData[3]
+  byte3 = sysexData[4]
+  optionalDelay = 0
+  
+  // 6th byte of sysex tunnel message can be the delay which is divided by 10 to not exceed 7 bit
+  if SysexSize = 6
+    optionalDelay = sysexData[5] * 10
+  endif
+    
+  // Force note off sent before on same channel and note
+  if sysexTunnelMessageId = 2
+    SendMIDIOut 0x80 + channel, byte2, 0, optionalDelay
+  endif
+    
+  //Log {Forwarding message, B1 }, byte1, { B2 }, byte2, { B3 }, byte3
+  // Send the actual message
+  SendMIDIOut byte1, byte2, byte3, optionalDelay
+
+@End 
+
+@LogCustomSysex
+  Log {Received Sysex, length: }, SysexSize, { B1: } , sysexData[0], { B2: }, sysexData[1], { B3 }, sysexData[2], { B4 }, sysexData[3], { B5 }, sysexData[4], { B6 }, sysexData[5]
+@End
+
+
+// -------------
+// Setup
+// -------------
+
+@InitializeLaunchKey
+  Call @EnableDawMode
+  //Call @EnableDawDrumMode
+  Call @SetDefaultModes
+@End
+
+@ResetLaunchKey
+  //Call @DisableDawDrumMode
+  Call @DisableDawMode
+@End
+
+@EnableDawMode
+  Log {Enabling Launchkey DAW mode}
+ 
+  sysexData = [0x9F, 0x0C, 0x7F]
+  sysexLength = 3
+  Call @SendLaunchKeySysex
+@End
+
+@DisableDawMode
+  Log {Disabling Launchkey DAW mode}
+  
+  sysexData = [0x9F, 0x0C, 0x00]
+  sysexLength = 3
+  Call @SendLaunchKeySysex
+@End
+
+@EnableDawDrumMode
+  Log {Enabling Launchkey DAW drum mode}
+ 
+  sysexData = [0xB6, 0x54, 0x01]
+  sysexLength = 3
+  Call @SendLaunchKeySysex
+@End
+
+@DisableDawDrumMode
+  Log {Disabling Launchkey DAW drum mode}
+  
+  sysexData = [0xB6, 0x54, 0x00]
+  sysexLength = 3
+  Call @SendLaunchKeySysex
+@End
+
+@SetDefaultModes
+  Log {Setting default LaunchKey modes}
+  // Pad mode = Drums
+  SendMIDICC 6, 0x1D, 0x01
+  
+  // Encoder mode = Custom Mode 1
+  SendMIDICC 6, 0x1E, 0x06
+  
+  // Fader mode = Custom Mode 1
+  SendMIDICC 6, 0x1F, 0x06
+@End
+
+@SetStationaryDisplay
+  
+  // Setup stationary display
+  sysexData = [0x04, 0x20, 0x01]
+  sysexLength = 3
+  Call @SendLaunchKeySysex
+  
+  // Set text "Bummelbox"
+  sysexData = [0x06, 0x20, 0x00, 0x1E, 66, 117, 109, 109, 101, 108, 98, 111, 120, 0x1E]
+  sysexLength = 14
+  Call @SendLaunchKeySysex
+
+  // Trigger stationary display
+  sysexData = [0x04, 0x20, 0x7F]
+  sysexLength = 3
+  Call @SendLaunchKeySysex
+
+@End
+
+// -------------
+// Utils
+// -------------
+
+// Sends Sysex command, prefixed with the LaunchKey specific header
+// Params:
+// - sysexData: Array of bytes to send
+// - sysexLength: Length of command bytes
+@SendLaunchKeySysex
+  sysexPayload = [0xF0, 0x00, 0x20, 0x29, 0x02, 0x14]
+  sysexHeaderLength = 6
+  sysexPayloadLength = sysexHeaderLength + sysexLength
+  
+  for index = 0 to (sysexLength - 1)
+    sysexPayload[(sysexHeaderLength + index)] = sysexData[index]
+  endfor
+  
+  SendSysex sysexPayload, sysexPayloadLength
+@End

@@ -1,0 +1,340 @@
+
+@OnLoad
+  // Globals
+  DrumPage = 0
+  FunctionDown = 0
+  SidechainDuck = 90
+  MaxSidechainDuck = 90
+  
+  // Colors
+  ColorNoteOn = 0x4E
+  ColorNoteOff = 0x42
+  ColorMutedNoteOn = 0x78
+  ColorMutedNoteOff = 0x79
+  // Tuples of colors for each color group: off color, on color
+  ColorGroupsColorMap = [11, 9,   14, 13,   39, 37,   59, 57,   23, 21,   47, 45,   51, 49,   55, 53]
+  
+  // Notes
+  SidechainTriggerNote = 127
+  
+  // Maps  
+  LKPadToDrumsMap[36] = [36, 37, 38, 39, 0, 0, 0, 0, 40, 41, 42, 43]
+  LKPadToClipsMap[40] = [12, 13, 14, 15, 0, 0, 0, 0, 16, 17, 18, 19]
+  DrumIndexToLKPadMap = [36, 37, 38, 39, 44, 45, 46, 47]
+  ClipIndexToLKPadMap = [40, 41, 42, 43, 48, 49, 50, 51]
+  LastUsedDrumPerIndex = [12, 13, 14, 15, 16, 17, 18, 19]
+  ClipStateMap = []
+  ParameterFeedbackToLKButtonMap = [0, 115, 76]
+  
+  // SysexTunnel
+  StatusByteSysexTunnelMap = []
+  StatusByteSysexTunnelMap[0x90] = 0
+  StatusByteSysexTunnelMap[0x80] = 1
+  StatusByteSysexTunnelMap[0x91] = 2
+  StatusByteSysexTunnelMap[0x81] = 1
+  StatusByteSysexTunnelMap[0xB0] = 3
+
+  // Buttons
+  LKFunctionButton = 105
+  LKPadUpButton = 106
+  LKPadDownButton = 107
+
+  LabelKnob 0, {Kick}
+  SetKnobValue 0, 127
+  SetKnobValue 1, 127
+  SetKnobValue 2, 127
+  SetKnobValue 3, 127
+  SetKnobValue 4, 127
+  SetKnobValue 5, 127
+  SetKnobValue 6, 127
+  SetKnobValue 7, 127
+  
+  LabelKnob 8, {Sidechain}
+  SetKnobValue 8, 0
+ 
+  Call @SeedColorGroupPadColors
+@End
+
+@OnMidiInput
+  // Call @LogIncomingMidi
+  Call @HandleFunctionButton
+  
+  if FunctionDown = 0
+    // Mapping stage: IN: 10, OUT: 11
+    Call @MapDrumPadNotesAndSendToCh11
+  else  
+    Call @ToggleDrumVelocities
+  endif
+  
+  // Velocity stage: IN: 11, OUT: 12
+  Call @ApplyNoteVelocityAndSendToCh12
+
+  // Paramter feedback stage: IN: 1, OUT: SysexTunnel
+  Call @ForwardClipParameterFeedback
+ 
+  // Clip mapping stage, IN: 10, OUT: 7
+  Call @MapClipPadsAndSendToCh7
+  
+  Call @HandleDrumPageSelection
+@End
+
+@OnKnobChange
+  // Set SidechainDuck from knob 8
+  if LastKnob = 8
+    knobPercentage = (GetKnobValue 8) / 127
+    SidechainDuck = (127 - MaxSidechainDuck) * knobPercentage + MaxSidechainDuck
+    Log SidechainDuck
+    Exit
+  endif
+
+  // Make pad color reflect mute state
+  // OnKnobChange only is called on user change, not via SetKnobValue
+  drumVelocity = GetKnobValue LastKnob
+
+  // Touch any knob to cycle through all colors on the top left LK pad 
+  //sysexTunnelData = [0x42, 2, 9, 40, drumVelocity]
+  //SendSysex sysexTunnelData, 5
+  
+  color = ColorNoteOff
+  
+  if drumVelocity = 0
+    color = ColorMutedNoteOff
+  endif
+  
+  mappedPadNote = DrumIndexToLKPadMap[LastKnob]
+  sysexTunnelData = [0x42, 2, 9, mappedPadNote, color]
+  SendSysex sysexTunnelData, 5
+  
+@End 
+
+@MapDrumPadNotesAndSendToCh11
+  isNoteOnOrOff = MIDICommand = 0x90 OR MIDICommand = 0x80
+  shouldMapNote = MIDIChannel = 9 AND LKPadToDrumsMap[MIDINote] > 0
+
+  if NOT (isNoteOnOrOff AND shouldMapNote)
+    Exit
+  endif
+
+  // Grab mapped note, lower 2 octaves, set octave of page
+  mappedNote = LKPadToDrumsMap[MIDINote] - 24 + DrumPage * 12
+
+  drumIndex = mappedNote % 12
+  drumVelocity = GetKnobValue drumIndex
+  
+  // If drum at index is unmuted
+  if drumVelocity <> 0
+    // Send note out
+    SendMIDIOut MIDICommand + 10, mappedNote, MIDIVelocity
+  else
+    // Otherwise unmute drum
+    mappedPadNote = DrumIndexToLKPadMap[knobIndex]
+    SetKnobValue drumIndex, 127
+    sysexTunnelData = [0x42, 2, 9, mappedPadNote, ColorNoteOff]
+    SendSysex sysexTunnelData, 5
+  endif
+
+@End
+
+@ToggleDrumVelocities
+  // Must be note off (=release) on LaunchKey pad channel
+  mappedMidiNote = LKPadToDrumsMap[MIDINote]
+  isDrumPad = mappedMidiNote > 0
+  if NOT (MIDICommand = 0x80 AND MIDIChannel = 9 AND isDrumPad)
+    Exit
+  endif
+
+  knobIndex = mappedMidiNote % 12
+  knobValue = GetKnobValue knobIndex
+  mappedPadNote = DrumIndexToLKPadMap[knobIndex]
+
+  if knobValue = 127
+    SetKnobValue knobIndex, 0
+    sysexTunnelData = [0x42, 2, 9, mappedPadNote, ColorMutedNoteOff]
+    SendSysex sysexTunnelData, 5
+  else
+    SetKnobValue knobIndex, 127
+    sysexTunnelData = [0x42, 2, 9, mappedPadNote, ColorNoteOff]
+    SendSysex sysexTunnelData, 5
+  endif
+@End
+
+@ApplyNoteVelocityAndSendToCh12
+  if MIDIChannel <> 10
+    Exit
+  endif
+  
+  noteToSend = MIDINote
+  if noteToSend >= 0 and noteToSend <= 11
+    noteToSend = LastUsedDrumPerIndex[noteToSend]
+  else
+    LastUsedDrumPerIndex[noteToSend % 12] = noteToSend
+  endif
+  
+  drumIndex = noteToSend % 12
+  isKick = drumIndex % 12 = 0
+  knobValue = GetKnobValue drumIndex
+  velocityPercentage = knobValue / 127
+  mappedPadNote = DrumIndexToLKPadMap[drumIndex]
+  actualVelocity = MIDIVelocity * velocityPercentage
+
+  // Pretty light show
+  color = ColorNoteOn
+  
+  if MIDICommand = 0x80 AND knobValue <> 0 
+    color = ColorNoteOff
+  elseif MIDICommand = 0x90 AND knobValue = 0
+    color = ColorMutedNoteOn
+  elseif MIDICommand = 0x80 AND knobValue = 0
+    color = ColorMutedNoteOff
+  endif
+  
+  sysexTunnelData = [0x42, 2, 9, mappedPadNote, color]
+  SendSysex sysexTunnelData, 5
+
+  if knobValue = 0
+    Exit
+  endif
+  
+  // Actually send note
+  SendMidiOut MIDICommand + 11, noteToSend, actualVelocity
+    
+  // Send sidechain trigger
+  if NOT (isKick AND MIDICommand = 0x90)
+    Exit
+  endif
+  
+  // SendMIDIOut MIDICommand + 11, SidechainTriggerNote, MIDIVelocity
+
+  // Send down, no ramp
+  padVelocity = MIDIVelocity / 127
+  sidechainRange = (127 - SidechainDuck) * padVelocity
+  sidechainDownVolume = 127 - sidechainRange
+  SendMIDICC 11, 1, sidechainDownVolume
+
+  // Send up, on a ramp
+  sidechainCurveMessages = 6
+  sidechainCurveDuration = 60000 / HostTempo / 4 // Quarter note duration
+
+  for iteration = 1 to sidechainCurveMessages
+    iterationPercentage = iteration / sidechainCurveMessages
+    // theres got to be a better way :(
+    sidechainUpIterationVolume = (127 - sidechainDownVolume) / sidechainCurveMessages * iteration + sidechainDownVolume
+    sidechainUpIterationDelay = sidechainCurveDuration * iterationPercentage
+    SendMIDICC 11, 1, sidechainUpIterationVolume, sidechainUpIterationDelay
+  endfor
+@End
+
+@ForwardClipParameterFeedback
+  if NOT (MIDIChannel = 0 AND (MIDICommand = 0x90 OR MIDICommand = 0x80))
+    Exit
+  endif
+  
+  // Sync mapped button states, lowest octave is reserved for button mappings
+  if MIDINote < 12
+    mappedLKButton = ParameterFeedbackToLKButtonMap[MIDINote]
+    sysexTunnelData = [0x42, 3, 3, mappedLKButton, MIDIByte3]
+    SendSysex sysexTunnelData, 5
+    Exit
+  endif
+  
+  // Sync clip pads to state
+  clipIndex = MIDINote % 12
+  colorIndex = 0 + (clipIndex * 2)
+  channel = 9
+  if MIDIVelocity > 0
+    colorIndex = colorIndex + 1
+  endif
+  color = ColorGroupsColorMap[colorIndex]
+  padNote = ClipIndexToLKPadMap[clipIndex]
+  ClipStateMap[MIDINote] = MIDIVelocity
+  sysexTunnelData = [0x42, 2, channel, padNote, color]
+  SendSysex sysexTunnelData, 5
+@End
+
+@MapClipPadsAndSendToCh7
+  mappedPadNote555 = LKPadToClipsMap[MIDINote]
+  shouldMapNote = LKPadToClipsMap[MIDINote] > 0
+  if NOT (MIDIChannel = 9 AND shouldMapNote)
+    Exit
+  endif
+  
+  isClipStopped = ClipStateMap[mappedPadNote555] = 0
+  
+  if FunctionDown = 1 OR isClipStopped
+    // Mapped to start/stop or clear (double tap), CH8
+    SendMIDIOut MIDICommand + 7, mappedPadNote555, 127    
+  else
+    // Mapped to retrospective record, CH 7
+    SendMIDIOut MIDICommand + 6, mappedPadNote555, 127
+  endif
+@End
+
+@HandleDrumPageSelection
+  // LaunchKey sends CCs for the up and down buttons
+  isUpOrDown = MIDIByte2 = LKPadUpButton OR MIDIByte2 = LKPadDownButton
+  if MIDICommand <> 0xB0 OR MIDIByte3 <> 0 OR NOT isUpOrDown
+    Exit
+  endif
+
+  // Up
+  if MIDIByte2 = LKPadUpButton
+    DrumPage = Clip (Inc DrumPage), 0, 7
+    Log {DrumPage=}, DrumPage
+  endif
+  
+  // Down
+  if MIDIByte2 = LKPadDownButton
+    DrumPage = Clip (Dec DrumPage), 0, 7
+    Log {DrumPage=}, DrumPage
+  endif
+  
+  // Light up pad at page index to indicate current page number
+  padNote = DrumIndexToLKPadMap[DrumPage]
+  sysexTunnelData = [0x42, 2, 9, padNote, 53]
+  SendSysex sysexTunnelData, 5
+  
+  color = ColorNoteOff
+  drumVelocity = GetKnobValue DrumPage
+  if drumVelocity = 0
+    color = ColorMutedNoteOff
+  endif
+  sysexTunnelData = [0x42, 2, 9, padNote, color, 25]
+  SendSysex sysexTunnelData, 6
+@End
+
+@HandleFunctionButton
+  if MIDICommand = 0xB0 and MIDIByte2 = LKFunctionButton and MIDIByte3 = 127
+    Log {Function down}
+    FunctionDown = 1
+    sysexTunnelData = [0x42, 3, 3, 105, 90]
+    SendSysex sysexTunnelData, 5
+    Exit
+  endif
+  
+  if MIDICommand = 0xB0 and MIDIByte2 = LKFunctionButton and MIDIByte3 = 0
+    Log {Function up}
+    FunctionDown = 0
+    sysexTunnelData = [0x42, 3, 3, 105, 45]
+    SendSysex sysexTunnelData, 5    
+    Exit
+  endif
+@End
+
+@SeedColorGroupPadColors
+for clipIndex = 0 to 7
+  padNote = ClipIndexToLKPadMap[clipIndex]
+  colorIndex = clipIndex * 2
+  color = ColorGroupsColorMap[colorIndex]
+  //Log {Setting color for pad }, clipIndex, { to color at index }, colorIndex, { = }, color
+  sysexTunnelData = [0x42, 2, 9, padNote, color]
+  SendSysex sysexTunnelData, 5
+endfor
+@End
+
+// --------
+// Utils
+// --------
+
+@LogIncomingMidi
+  Log {B1=}, MIDIByte1, {, B2=}, MIDIByte2, {, B3=}, MIDIByte3
+@End
