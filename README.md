@@ -8,6 +8,8 @@ This repository contains Moziac scripts for integrating my Novation Launchkey 49
 - Custom sidechain via MIDI CC messages from any kick note (any octave of C)
 - Much more
 
+![MIDI routing architecture](./docs/architecture.svg)
+
 ## pico-midi-loopback
 
 Contains a simple Circuitpython script which returns the MIDI messages sent to it on a channel 1. I use this to work around the limitation that Auv3 MIDI plugins do not receive state feedback via MIDI Messages.
